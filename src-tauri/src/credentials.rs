@@ -1,8 +1,11 @@
 //! Credential access: macOS Keychain for user-configured Ark AK/SK,
-//! and read-only reuse of arkcli's SSO-derived STS credentials.
+//! and reuse of arkcli's SSO-derived STS credentials with silent refresh.
 
 use crate::volc_sigv4::Credentials;
 use chrono::Utc;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const KEYCHAIN_SERVICE: &str = "com.agentplanmonitor.app";
 const KEYCHAIN_AK: &str = "ark_access_key";
@@ -15,7 +18,7 @@ const KEYCHAIN_KIRO: &str = "kiro_api_key";
 pub enum ArkCredSource {
     /// Explicitly configured in the settings window, stored in Keychain.
     AkSk,
-    /// Reused from arkcli's SSO login state (~/.arkcli/.env).
+    /// Reused from arkcli's SSO login state (~/.arkcli/identities/*/sts.json).
     ArkCli,
 }
 
@@ -105,19 +108,49 @@ pub fn clear_kiro_api_key() -> Result<(), String> {
     Ok(())
 }
 
-/// arkcli keeps its fresh SSO-derived STS at
-/// `~/.arkcli/identities/<identity>/sts.json` ({ak, sk, session_token,
-/// expires_at} in epoch ms). `~/.arkcli/.env` also has VOLCENGINE_STS_* but
-/// is only refreshed at login time — try identities first, then .env.
+/// Treat tokens expiring within this window as already expired, so a signing
+/// request never uses a token that dies mid-flight.
+const STS_EXPIRY_SKEW_MS: i64 = 60_000;
+
+/// arkcli's STS lives at `~/.arkcli/identities/<identity>/sts.json` ({ak, sk,
+/// session_token, expires_at} in epoch ms). arkcli silently refreshes it on
+/// any command while the SSO identity is valid, so an expired sts.json only
+/// means "arkcli has not run recently" — run `arkcli auth status` once to
+/// trigger that refresh, then re-read. `~/.arkcli/.env` is never consulted:
+/// its VOLCENGINE_STS_* values are written only at login time and go stale.
 fn arkcli_sts() -> Result<Credentials, ArkCredError> {
-    arkcli_sts_from_identities().or_else(|_| arkcli_sts_from_env())
+    match arkcli_sts_from_identities() {
+        Ok(c) => Ok(c),
+        Err(e) => {
+            // Only users who actually logged in via arkcli get a refresh
+            // attempt; never spawn a subprocess for Keychain-only users.
+            if !arkcli_identities_dir().is_dir() {
+                return Err(e);
+            }
+            try_refresh_arkcli_sts();
+            // After a refresh attempt, "directory exists but no usable
+            // credential" means the identity is dead, not "not configured".
+            match arkcli_sts_from_identities() {
+                Err(ArkCredError::NotConfigured) => Err(ArkCredError::ArkCliExpired),
+                r => r,
+            }
+        }
+    }
+}
+
+fn arkcli_identities_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".arkcli/identities")
+}
+
+fn is_sts_expired(expires_ms: i64, now_ms: i64) -> bool {
+    expires_ms <= now_ms + STS_EXPIRY_SKEW_MS
 }
 
 fn arkcli_sts_from_identities() -> Result<Credentials, ArkCredError> {
-    let dir = dirs::home_dir()
-        .ok_or(ArkCredError::NotConfigured)?
-        .join(".arkcli/identities");
-    let entries = std::fs::read_dir(&dir).map_err(|_| ArkCredError::NotConfigured)?;
+    let entries =
+        std::fs::read_dir(arkcli_identities_dir()).map_err(|_| ArkCredError::NotConfigured)?;
     let mut best: Option<(i64, Credentials)> = None;
     for entry in entries.flatten() {
         let content = match std::fs::read_to_string(entry.path().join("sts.json")) {
@@ -146,38 +179,119 @@ fn arkcli_sts_from_identities() -> Result<Credentials, ArkCredError> {
         }
     }
     let (expires_ms, creds) = best.ok_or(ArkCredError::NotConfigured)?;
-    if expires_ms <= Utc::now().timestamp_millis() {
+    if is_sts_expired(expires_ms, Utc::now().timestamp_millis()) {
         return Err(ArkCredError::ArkCliExpired);
     }
     Ok(creds)
 }
 
-fn arkcli_sts_from_env() -> Result<Credentials, ArkCredError> {
-    let env_path = dirs::home_dir()
-        .ok_or(ArkCredError::NotConfigured)?
-        .join(".arkcli/.env");
-    let content = std::fs::read_to_string(&env_path).map_err(|_| ArkCredError::NotConfigured)?;
-    let get = |key: &str| -> Option<String> {
-        content
-            .lines()
-            .find_map(|l| l.strip_prefix(key).and_then(|v| v.strip_prefix('=')))
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
+// ---------------------------------------------------------- silent refresh
+
+const REFRESH_COOLDOWN: Duration = Duration::from_secs(90);
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
+
+struct RefreshState {
+    last_attempt: Option<Instant>,
+}
+
+static REFRESH_STATE: OnceLock<Mutex<RefreshState>> = OnceLock::new();
+
+/// Trigger arkcli's silent STS refresh by running `arkcli auth status
+/// --format json`. Best-effort: any failure (missing binary, spawn error,
+/// timeout, non-zero exit) is swallowed — the caller re-reads sts.json and
+/// judges the result. Serialized through a mutex with a cooldown so
+/// concurrent/accelerated polls never spawn more than one arkcli process.
+fn try_refresh_arkcli_sts() {
+    let Some(bin) = find_arkcli_binary() else {
+        return;
     };
-    let ak = get("VOLCENGINE_STS_ACCESS_KEY").ok_or(ArkCredError::NotConfigured)?;
-    let sk = get("VOLCENGINE_STS_SECRET_KEY").ok_or(ArkCredError::NotConfigured)?;
-    let token = get("VOLCENGINE_STS_SESSION_TOKEN").ok_or(ArkCredError::NotConfigured)?;
-    let expires_ms: i64 = get("VOLCENGINE_STS_EXPIRES_AT_MS")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    if expires_ms <= Utc::now().timestamp_millis() {
-        return Err(ArkCredError::ArkCliExpired);
+    let state = REFRESH_STATE.get_or_init(|| Mutex::new(RefreshState { last_attempt: None }));
+    {
+        // Poisoned lock or a recent attempt: skip silently.
+        let mut guard = match state.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if guard
+            .last_attempt
+            .is_some_and(|t| t.elapsed() < REFRESH_COOLDOWN)
+        {
+            return;
+        }
+        // Stamp before releasing so concurrent callers see the cooldown and
+        // skip; do not hold the lock across the subprocess wait.
+        guard.last_attempt = Some(Instant::now());
     }
-    Ok(Credentials {
-        access_key: ak,
-        secret_key: sk,
-        session_token: Some(token),
-    })
+
+    let mut child = match std::process::Command::new(bin)
+        .args(["auth", "status", "--format", "json"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if start.elapsed() < REFRESH_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+/// Locate the arkcli binary. GUI apps launched from Finder get a minimal
+/// PATH, so probe the common install locations after trying `which`.
+fn find_arkcli_binary() -> Option<PathBuf> {
+    if let Ok(out) = std::process::Command::new("which").arg("arkcli").output() {
+        if out.status.success() {
+            let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+            if !p.as_os_str().is_empty() && p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    // nvm: ~/.nvm/versions/node/*/bin/arkcli — lexicographically last wins.
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(entries) = std::fs::read_dir(home.join(".nvm/versions/node")) {
+            let mut candidates: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path().join("bin/arkcli"))
+                .filter(|p| p.exists())
+                .collect();
+            candidates.sort();
+            if let Some(p) = candidates.pop() {
+                return Some(p);
+            }
+        }
+    }
+    if let Ok(out) = std::process::Command::new("npm")
+        .args(["prefix", "-g"])
+        .output()
+    {
+        if out.status.success() {
+            let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join("bin/arkcli");
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    for p in ["/usr/local/bin/arkcli", "/opt/homebrew/bin/arkcli"] {
+        let path = PathBuf::from(p);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -217,11 +331,13 @@ mod tests {
     }
 
     #[test]
-    fn env_parse_skips_empty_values() {
-        let parsed: Option<String> = "A=1\nB=\n".lines()
-            .find_map(|l| l.strip_prefix("B").and_then(|v| v.strip_prefix('=')))
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-        assert_eq!(parsed, None);
+    fn sts_expiry_uses_safety_skew() {
+        let now = 1_000_000;
+        // Fresh: expires well beyond the skew window.
+        assert!(!is_sts_expired(now + 120_000, now));
+        // Exactly at now + skew: treated as expired.
+        assert!(is_sts_expired(now + 60_000, now));
+        // Already past.
+        assert!(is_sts_expired(now - 1, now));
     }
 }

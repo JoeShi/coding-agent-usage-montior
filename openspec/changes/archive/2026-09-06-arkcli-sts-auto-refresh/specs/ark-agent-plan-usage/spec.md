@@ -1,33 +1,6 @@
-# ark-agent-plan-usage Specification
+# ark-agent-plan-usage Delta
 
-## Purpose
-
-通过火山引擎方舟管控面 API 查询 AgentPlan 个人版套餐的额度使用情况，包括 5 小时 / 1 天 / 1 周 / 1 月四个滚动窗口的 AFP 配额与分模型用量明细。
-
-## Requirements
-
-### Requirement: AK/SK 签名查询套餐配额
-
-系统 SHALL 使用用户配置的火山引擎 Access Key / Secret Key，以 V4 签名（service: `ark`，region: `cn-beijing`）调用 `POST https://ark.cn-beijing.volcengineapi.com/?Action=GetAFPUsage&Version=2024-01-01`，并解析四个滚动窗口（AFPFiveHour、AFPDaily、AFPWeekly、AFPMonthly）的 Quota、Used、ResetTime 及套餐档位（PlanType）。ARK API Key（Bearer 方式）MUST NOT 用于管控面查询——该方式已被服务端拒绝。
-
-#### Scenario: 查询成功
-
-- **WHEN** AK/SK 有效且账号已订阅 AgentPlan 个人版
-- **THEN** 系统返回四个滚动窗口的配额、已用量、重置时间和套餐档位
-
-#### Scenario: 鉴权失败
-
-- **WHEN** AK/SK 无效或权限不足
-- **THEN** 系统将数据源标记为鉴权错误状态，界面提示用户检查 AK/SK 及其 ArkReadOnlyAccess 权限
-
-### Requirement: 查询分模型用量明细
-
-系统 SHALL 支持调用 `POST https://ark.cn-beijing.volcengineapi.com/?Action=GetUsageDetails&Version=2024-01-01`，按天或小时粒度查询指定时间范围内的分模型用量明细，用于明细视图展示。
-
-#### Scenario: 按天查询明细
-
-- **WHEN** 用户打开明细视图并选择时间范围
-- **THEN** 系统以 Day 粒度查询并展示该范围内各模型的用量
+## MODIFIED Requirements
 
 ### Requirement: arkcli 登录态 fallback
 
@@ -61,12 +34,3 @@
 
 - **WHEN** 距上一次续期尝试不足 90 秒，或上一次续期已超时
 - **THEN** 系统不重复拉起子进程，直接使用当前可读到的凭证状态判定
-
-### Requirement: 凭证优先级
-
-当用户同时配置了 AK/SK 且存在 arkcli 登录态时，系统 SHALL 优先使用用户显式配置的 AK/SK。
-
-#### Scenario: 双凭证存在
-
-- **WHEN** AK/SK 已配置且 arkcli 登录态也存在
-- **THEN** 系统使用 AK/SK 进行查询

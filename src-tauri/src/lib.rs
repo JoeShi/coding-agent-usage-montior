@@ -218,8 +218,13 @@ struct ArkCredStatus {
 }
 
 #[tauri::command]
-fn get_ark_cred_status() -> ArkCredStatus {
-    match credentials::resolve_ark_credentials() {
+async fn get_ark_cred_status() -> ArkCredStatus {
+    // Resolution may spawn the arkcli refresh subprocess; keep it off the
+    // async runtime so the IPC handler never blocks.
+    let resolved = tokio::task::spawn_blocking(credentials::resolve_ark_credentials)
+        .await
+        .unwrap_or(Err(credentials::ArkCredError::NotConfigured));
+    match resolved {
         Ok(c) => ArkCredStatus {
             configured: true,
             source: Some(c.source),

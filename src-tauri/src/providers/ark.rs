@@ -179,12 +179,14 @@ async fn call<T: for<'de> Deserialize<'de>>(
 
 /// Fetch the four AFP rolling windows as a unified snapshot.
 pub async fn fetch_afp_usage(http: &reqwest::Client) -> UsageSnapshot {
-    let resolved = match credentials::resolve_ark_credentials() {
-        Ok(r) => r,
-        Err(ArkCredError::NotConfigured) => {
+    // Credential resolution may spawn the arkcli refresh subprocess (up to
+    // 30s), so keep it off the async runtime.
+    let resolved = match tokio::task::spawn_blocking(credentials::resolve_ark_credentials).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(ArkCredError::NotConfigured)) | Err(_) => {
             return UsageSnapshot::new(DataSource::ArkAgentPlan, SourceStatus::NotConfigured)
         }
-        Err(ArkCredError::ArkCliExpired) => {
+        Ok(Err(ArkCredError::ArkCliExpired)) => {
             return UsageSnapshot::new(DataSource::ArkAgentPlan, SourceStatus::NeedRelogin)
         }
     };
@@ -237,7 +239,9 @@ pub async fn fetch_usage_details(
     end: &str,
     interval: &str,
 ) -> Result<Vec<UsageDetail>, FetchError> {
-    let resolved = credentials::resolve_ark_credentials()
+    let resolved = tokio::task::spawn_blocking(credentials::resolve_ark_credentials)
+        .await
+        .unwrap_or(Err(ArkCredError::NotConfigured))
         .map_err(|e| match e {
             ArkCredError::NotConfigured => FetchError::Status(SourceStatus::NotConfigured),
             ArkCredError::ArkCliExpired => FetchError::Status(SourceStatus::NeedRelogin),

@@ -251,7 +251,7 @@ function SettingsTab({ onSaved }: { onSaved: () => void }) {
             ? "手动配置的 AK/SK"
             : "arkcli 登录态（零配置）"
           : cred?.state === "expired"
-            ? "arkcli 登录态已过期 — 请运行 arkcli auth login 或配置 AK/SK"
+            ? "arkcli 登录态失效（自动续期失败）— 请运行 arkcli auth login 或配置 AK/SK"
             : "未配置"}
       </div>
       <input
