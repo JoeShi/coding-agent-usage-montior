@@ -1,24 +1,6 @@
-# menubar-display Specification
+# menubar-display Delta
 
-## Purpose
-
-在 macOS 状态栏常驻显示各 agent 订阅的额度概况，并提供下拉明细视图，让用户一眼掌握最紧张的配额指标。
-
-## Requirements
-
-### Requirement: 状态栏压缩显示
-
-系统 SHALL 在 macOS 状态栏以压缩格式展示各数据源的用量百分比（如 `K:90% A:45% R:12%`，分别对应 Kimi Code、火山 AgentPlan、Kiro），优先展示各数据源中最紧张的滚动窗口指标。
-
-#### Scenario: 正常显示
-
-- **WHEN** 至少一个数据源查询成功
-- **THEN** 状态栏显示各数据源最紧张窗口的用量百分比
-
-#### Scenario: 数据源不可用
-
-- **WHEN** 某数据源未配置或处于错误状态
-- **THEN** 状态栏对该数据源显示明确的异常占位（如 `R:--`），而不是隐藏或显示陈旧数据为正常
+## MODIFIED Requirements
 
 ### Requirement: 下拉明细视图
 
@@ -39,6 +21,8 @@
 - **WHEN** Kiro 账号开启了超额计费且产生了超额用量
 - **THEN** 明细视图展示超额 credits 与预估美元费用
 
+## ADDED Requirements
+
 ### Requirement: 弹窗失焦自动收起
 
 明细面板 SHALL 在失去焦点（用户点击面板之外的任意位置）时自动收起，不需要用户手动关闭。
@@ -52,21 +36,3 @@
 
 - **WHEN** 明细面板已打开且用户再次点击状态栏图标
 - **THEN** 面板收起
-
-### Requirement: 高用量视觉提示
-
-当任一窗口用量达到 80% 以上时，系统 SHALL 在状态栏和下拉菜单中给出可区分的视觉提示（如图标变色或高亮）。
-
-#### Scenario: 超过阈值高亮
-
-- **WHEN** 任一窗口用量 ≥ 80%
-- **THEN** 状态栏图标或文字呈现警示样式
-
-### Requirement: 入口导航
-
-下拉菜单 SHALL 提供打开设置窗口、手动刷新和退出应用的入口。
-
-#### Scenario: 打开设置
-
-- **WHEN** 用户点击下拉菜单中的设置入口
-- **THEN** 系统打开设置窗口

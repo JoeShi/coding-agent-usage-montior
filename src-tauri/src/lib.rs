@@ -15,6 +15,7 @@ use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_positioner::{Position, WindowExt};
 
 // ---------------------------------------------------------------- state
 
@@ -369,6 +370,7 @@ async fn get_ark_usage_details(
 
 fn show_main_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
+        let _ = win.move_window(Position::TrayCenter);
         let _ = win.show();
         let _ = win.set_focus();
     }
@@ -380,6 +382,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_positioner::init())
         .manage(AppState {
             snapshots: Mutex::new(HashMap::new()),
             config: Mutex::new(config::load()),
@@ -400,6 +403,21 @@ pub fn run() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // Popover 风格：毛玻璃背景（随系统深浅色自适应）+ 原生圆角。
+            #[cfg(target_os = "macos")]
+            if let Some(win) = app.get_webview_window("main") {
+                use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+                // Menu 材质：与系统菜单栏下拉一致；Popover 会被壁纸染色（BehindWindow 混合）。
+                if let Err(e) = apply_vibrancy(
+                    &win,
+                    NSVisualEffectMaterial::Menu,
+                    Some(NSVisualEffectState::Active),
+                    Some(12.0),
+                ) {
+                    eprintln!("apply_vibrancy failed: {e}");
+                }
+            }
 
             // Tray: left click toggles the detail window, menu for actions.
             let refresh_i = MenuItem::with_id(app, "refresh", "立即刷新", true, None::<&str>)?;
@@ -426,6 +444,8 @@ pub fn run() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
+                    // 让 positioner 记录托盘图标位置，TrayCenter 定位依赖它。
+                    tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
@@ -438,6 +458,7 @@ pub fn run() {
                                 let _ = win.hide();
                             } else {
                                 let _ = app.state::<AppState>().refresh_tx.try_send(());
+                                let _ = win.move_window(Position::TrayCenter);
                                 let _ = win.show();
                                 let _ = win.set_focus();
                             }
@@ -458,6 +479,10 @@ pub fn run() {
             // Hide instead of closing: menu-bar app stays resident.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                let _ = window.hide();
+            }
+            // Popover 行为：点击面板之外（失焦）自动收起。
+            if let tauri::WindowEvent::Focused(false) = event {
                 let _ = window.hide();
             }
         })

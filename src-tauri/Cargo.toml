@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -32,6 +32,8 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 toml = "0.8"
 urlencoding = "2"
+window-vibrancy = "0.6"
+tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

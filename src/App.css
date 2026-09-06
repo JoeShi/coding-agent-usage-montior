@@ -1,7 +1,40 @@
 :root {
   font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
   font-size: 13px;
-  color: #1d1d1f;
+  --text: #1d1d1f;
+  --text-2: #555;
+  --text-3: #888;
+  --text-faint: #6a6a70;
+  --panel-tint: rgba(248, 248, 250, 0.55);
+  --card-bg: rgba(255, 255, 255, 0.72);
+  --border: #e0e0e4;
+  --input-bg: #fff;
+  --input-border: #d5d5da;
+  --bar-bg: #eee;
+  --well-bg: #f0f0f4;
+  --tab-active-bg: #fff;
+  --btn-secondary-bg: #e5e5ea;
+  --btn-secondary-fg: #333;
+  color: var(--text);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #f2f2f7;
+    --text-2: #c7c7cc;
+    --text-3: #9a9aa0;
+    --text-faint: #b0b0b8;
+    --panel-tint: rgba(28, 28, 30, 0.55);
+    --card-bg: rgba(58, 58, 60, 0.62);
+    --border: rgba(255, 255, 255, 0.12);
+    --input-bg: rgba(255, 255, 255, 0.08);
+    --input-border: rgba(255, 255, 255, 0.25);
+    --bar-bg: rgba(255, 255, 255, 0.15);
+    --well-bg: rgba(255, 255, 255, 0.08);
+    --tab-active-bg: rgba(255, 255, 255, 0.15);
+    --btn-secondary-bg: rgba(255, 255, 255, 0.15);
+    --btn-secondary-fg: #f2f2f7;
+  }
 }
 
 * {
@@ -10,22 +43,26 @@
   box-sizing: border-box;
 }
 
+html,
 body {
   background: transparent;
 }
 
+/* 毛玻璃由原生窗口 vibrancy 提供，根容器圆角 + 主题色半透明底色压住壁纸染色。 */
 .app {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: rgba(246, 246, 248, 0.96);
+  background: var(--panel-tint);
+  border-radius: 12px;
+  overflow: hidden;
 }
 
 .tabs {
   display: flex;
   gap: 4px;
   padding: 8px 12px;
-  border-bottom: 1px solid #e0e0e4;
+  border-bottom: 1px solid var(--border);
   align-items: center;
 }
 
@@ -36,12 +73,12 @@ body {
   border-radius: 6px;
   font-size: 13px;
   cursor: pointer;
-  color: #555;
+  color: var(--text-2);
 }
 
 .tabs button.active {
-  background: #fff;
-  color: #000;
+  background: var(--tab-active-bg);
+  color: var(--text);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
 }
 
@@ -57,7 +94,7 @@ main {
 }
 
 .empty {
-  color: #888;
+  color: var(--text-3);
   text-align: center;
   margin-top: 40px;
 }
@@ -65,7 +102,7 @@ main {
 /* ---- source cards ---- */
 
 .card {
-  background: #fff;
+  background: var(--card-bg);
   border-radius: 10px;
   padding: 12px;
   margin-bottom: 12px;
@@ -118,17 +155,17 @@ main {
 
 .window-label {
   font-weight: 500;
-  color: #444;
+  color: var(--text-2);
 }
 
 .window-nums {
-  color: #888;
+  color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
 
 .bar {
   height: 6px;
-  background: #eee;
+  background: var(--bar-bg);
   border-radius: 3px;
   overflow: hidden;
 }
@@ -152,7 +189,7 @@ main {
 
 .window-reset {
   font-size: 11px;
-  color: #aaa;
+  color: var(--text-faint);
   margin-top: 2px;
 }
 
@@ -161,15 +198,15 @@ main {
   flex-wrap: wrap;
   gap: 4px 12px;
   font-size: 11px;
-  color: #666;
+  color: var(--text-2);
   margin-top: 8px;
-  border-top: 1px solid #f0f0f2;
+  border-top: 1px solid var(--border);
   padding-top: 8px;
 }
 
 .fetched {
   font-size: 10px;
-  color: #bbb;
+  color: var(--text-faint);
   margin-top: 4px;
   text-align: right;
 }
@@ -179,7 +216,7 @@ main {
 .settings h3 {
   font-size: 13px;
   margin: 16px 0 8px;
-  color: #333;
+  color: var(--text-2);
 }
 
 .settings h3:first-child {
@@ -193,10 +230,11 @@ main {
   width: 100%;
   padding: 6px 10px;
   margin: 6px 0;
-  border: 1px solid #d5d5da;
+  border: 1px solid var(--input-border);
   border-radius: 6px;
   font-size: 13px;
-  background: #fff;
+  background: var(--input-bg);
+  color: var(--text);
 }
 
 .settings .row {
@@ -204,7 +242,7 @@ main {
   align-items: center;
   gap: 8px;
   margin: 6px 0;
-  color: #444;
+  color: var(--text-2);
 }
 
 .settings .row input[type="checkbox"] {
@@ -213,8 +251,8 @@ main {
 
 .cred-status {
   font-size: 12px;
-  color: #555;
-  background: #f0f0f4;
+  color: var(--text-2);
+  background: var(--well-bg);
   border-radius: 6px;
   padding: 8px 10px;
   margin-bottom: 8px;
@@ -222,7 +260,7 @@ main {
 
 .hint {
   font-size: 11px;
-  color: #999;
+  color: var(--text-faint);
   line-height: 1.5;
 }
 
@@ -248,8 +286,8 @@ main {
 }
 
 .btn-row button + button {
-  background: #e5e5ea;
-  color: #333;
+  background: var(--btn-secondary-bg);
+  color: var(--btn-secondary-fg);
 }
 
 .msg {
