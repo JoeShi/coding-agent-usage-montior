@@ -1,0 +1,37 @@
+## ADDED Requirements
+
+（无）
+
+## MODIFIED Requirements
+
+### Requirement: 状态栏压缩显示
+
+系统 SHALL 在 macOS 状态栏以压缩格式展示各数据源的用量百分比（如 `K:90% A:45% R:12%`，分别对应 Kimi Code、火山 AgentPlan、Kiro），优先展示各数据源中最紧张的滚动窗口指标。
+
+#### Scenario: 正常显示
+
+- **WHEN** 至少一个数据源查询成功
+- **THEN** 状态栏显示各数据源最紧张窗口的用量百分比
+
+#### Scenario: 数据源不可用
+
+- **WHEN** 某数据源未配置或处于错误状态
+- **THEN** 状态栏对该数据源显示明确的异常占位（如 `R:--`），而不是隐藏或显示陈旧数据为正常
+
+### Requirement: 下拉明细视图
+
+系统 SHALL 在用户打开状态栏下拉菜单时展示各数据源的完整明细：每个滚动窗口的已用量/配额/百分比/重置时间、Kimi Code 的会员等级与 Extra Usage 余额、火山套餐档位、Kiro 的订阅档位与超额计费信息（超额开关/超额 credits/预估费用），以及各数据源的状态（正常 / 数据过期 / 鉴权错误 / 未配置）。
+
+#### Scenario: 查看完整明细
+
+- **WHEN** 用户打开下拉菜单
+- **THEN** 界面列出每个数据源的所有滚动窗口明细、重置时间和数据源状态
+
+#### Scenario: 查看 Kiro 超额信息
+
+- **WHEN** Kiro 账号开启了超额计费且产生了超额用量
+- **THEN** 明细视图展示超额 credits 与预估美元费用
+
+## REMOVED Requirements
+
+（无）
