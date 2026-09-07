@@ -1,33 +1,4 @@
-# ark-agent-plan-usage Specification
-
-## Purpose
-
-通过火山引擎方舟管控面 API 查询 AgentPlan 个人版套餐的额度使用情况，包括 5 小时 / 1 天 / 1 周 / 1 月四个滚动窗口的 AFP 配额与分模型用量明细。
-
-## Requirements
-
-### Requirement: 签名查询套餐配额
-
-系统 SHALL 使用 arkcli SSO 登录态的 STS 临时凭证（含 session token），以 V4 签名（service: `ark`，region: `cn-beijing`）调用 `POST https://ark.cn-beijing.volcengineapi.com/?Action=GetAFPUsage&Version=2024-01-01`，并解析三个滚动窗口（AFPFiveHour、AFPWeekly、AFPMonthly）的 Quota、Used、ResetTime 及套餐档位（PlanType）。响应中的 AFPDaily 字段 MUST 被忽略——对 AgentPlan 个人版其为恒 0 的幽灵字段，不是真实维度。ARK API Key（Bearer 方式）MUST NOT 用于管控面查询——该方式已被服务端拒绝。
-
-#### Scenario: 查询成功
-
-- **WHEN** arkcli 登录态有效且账号已订阅 AgentPlan 个人版
-- **THEN** 系统返回 5 小时 / 1 周 / 1 月三个滚动窗口的配额、已用量、重置时间和套餐档位
-
-#### Scenario: 鉴权失败
-
-- **WHEN** arkcli STS 凭证无效或权限不足
-- **THEN** 系统将数据源标记为鉴权错误状态，界面提示用户检查 arkcli 登录态
-
-### Requirement: 查询分模型用量明细
-
-系统 SHALL 支持调用 `POST https://ark.cn-beijing.volcengineapi.com/?Action=GetUsageDetails&Version=2024-01-01`，按天或小时粒度查询指定时间范围内的分模型用量明细，用于明细视图展示。
-
-#### Scenario: 按天查询明细
-
-- **WHEN** 用户打开明细视图并选择时间范围
-- **THEN** 系统以 Day 粒度查询并展示该范围内各模型的用量
+## MODIFIED Requirements
 
 ### Requirement: arkcli 登录态凭证
 

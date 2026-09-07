@@ -70,8 +70,20 @@ fn arkcli_sts() -> Result<Credentials, ArkCredError> {
             // After a refresh attempt, "directory exists but no usable
             // credential" means the identity is dead, not "not configured".
             match arkcli_sts_from_identities() {
-                Err(ArkCredError::NotConfigured) => Err(ArkCredError::ArkCliExpired),
-                r => r,
+                Err(ArkCredError::NotConfigured) => {
+                    crate::log::log("sts refresh: no usable credential after refresh");
+                    Err(ArkCredError::ArkCliExpired)
+                }
+                Err(ArkCredError::ArkCliExpired) => {
+                    crate::log::log("sts refresh: credential still expired after refresh");
+                    Err(ArkCredError::ArkCliExpired)
+                }
+                r => {
+                    if r.is_ok() {
+                        crate::log::log("sts refresh: succeeded");
+                    }
+                    r
+                }
             }
         }
     }
@@ -140,8 +152,11 @@ static REFRESH_STATE: OnceLock<Mutex<RefreshState>> = OnceLock::new();
 /// timeout, non-zero exit) is swallowed — the caller re-reads sts.json and
 /// judges the result. Serialized through a mutex with a cooldown so
 /// concurrent/accelerated polls never spawn more than one arkcli process.
+/// Failures are recorded in the diagnostics log (no secrets).
 fn try_refresh_arkcli_sts() {
+    crate::log::log("sts refresh: triggered (sts.json expired or expiring)");
     let Some(bin) = find_arkcli_binary() else {
+        crate::log::log("sts refresh: skipped, arkcli binary not found");
         return;
     };
     let state = REFRESH_STATE.get_or_init(|| Mutex::new(RefreshState { last_attempt: None }));
@@ -162,30 +177,52 @@ fn try_refresh_arkcli_sts() {
         guard.last_attempt = Some(Instant::now());
     }
 
-    let mut child = match std::process::Command::new(bin)
-        .args(["auth", "status", "--format", "json"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
+    let mut child = match refresh_command(&bin).spawn() {
         Ok(c) => c,
-        Err(_) => return,
+        Err(e) => {
+            crate::log::log(&format!("sts refresh: spawn failed: {e}"));
+            return;
+        }
     };
     let start = Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => {
+                crate::log::log(&format!("sts refresh: arkcli exited with {status}"));
+                break;
+            }
             Ok(None) if start.elapsed() < REFRESH_TIMEOUT => {
                 std::thread::sleep(Duration::from_millis(100));
             }
             Ok(None) => {
+                crate::log::log("sts refresh: timed out after 30s, killed");
                 let _ = child.kill();
                 let _ = child.wait();
                 break;
             }
-            Err(_) => break,
+            Err(e) => {
+                crate::log::log(&format!("sts refresh: wait error: {e}"));
+                break;
+            }
         }
     }
+}
+
+/// Build the refresh command. arkcli is a `#!/usr/bin/env node` script, and
+/// GUI apps launched from Finder get a minimal PATH without node — the
+/// subprocess then exits 127 silently. The node binary lives next to arkcli
+/// for nvm / homebrew / /usr/local installs, so prepend that directory to
+/// the child's PATH.
+fn refresh_command(bin: &std::path::Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(bin);
+    cmd.args(["auth", "status", "--format", "json"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if let Some(dir) = bin.parent() {
+        let existing = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{}:{existing}", dir.display()));
+    }
+    cmd
 }
 
 /// Locate the arkcli binary. GUI apps launched from Finder get a minimal
@@ -246,5 +283,21 @@ mod tests {
         assert!(is_sts_expired(now + 60_000, now));
         // Already past.
         assert!(is_sts_expired(now - 1, now));
+    }
+
+    #[test]
+    fn refresh_command_prepends_arkcli_dir_to_path() {
+        let bin = PathBuf::from("/home/u/.nvm/versions/node/v24/bin/arkcli");
+        let cmd = refresh_command(&bin);
+        let path = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "PATH")
+            .and_then(|(_, v)| v)
+            .expect("PATH must be set for the refresh subprocess");
+        let path = path.to_string_lossy();
+        assert!(
+            path.starts_with("/home/u/.nvm/versions/node/v24/bin:"),
+            "arkcli's dir must lead PATH so `env node` resolves under a minimal GUI PATH, got: {path}"
+        );
     }
 }

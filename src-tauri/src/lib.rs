@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod credentials;
+pub mod log;
 pub mod model;
 pub mod providers;
 pub mod volc_sigv4;
@@ -15,7 +16,6 @@ use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_positioner::{Position, WindowExt};
 
 // ---------------------------------------------------------------- state
 
@@ -235,9 +235,75 @@ async fn get_ark_usage_details(
 
 // ---------------------------------------------------------------- setup
 
+/// Position the popover under the menu bar on the display the user is
+/// interacting with, using logical (point) coordinates.
+///
+/// Why not tauri-plugin-positioner's TrayCenter: tao's `set_outer_position`
+/// converts physical positions with the window's *current* screen scale
+/// factor. When the window last sat on a display with a different DPI than
+/// the one being clicked (mixed-DPI multi-monitor), the conversion is wrong
+/// and the window lands off-screen; the visible toggle then appears dead
+/// (tauri-apps/tauri#7890 family). Logical coordinates skip that conversion
+/// entirely.
+///
+/// `tray_rect` is the clicked tray icon's rect (physical) when invoked from
+/// a tray click; menu-item invocations pass None and fall back to cursor.
+///
+/// Coordinate space notes (macOS, mixed-DPI):
+/// - `cursor_position()` returns "physical" = global points x the PRIMARY
+///   display's scale, while `monitor_from_point` compares against
+///   `CGDisplayBounds` rects, which are in global POINTS. Dividing the cursor
+///   by the primary scale converts back to points before hit-testing —
+///   passing physical coords directly misses every CGDisplayBounds rect and
+///   silently falls back to the wrong monitor.
+/// - Tray rect / monitor position+size are physical with each screen's OWN
+///   scale, so divide those by the target monitor's scale.
+fn position_popover(win: &tauri::WebviewWindow, tray_rect: Option<(f64, f64, f64, f64)>) {
+    let app = win.app_handle().clone();
+    let primary_scale = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(1.0);
+    // Global points, top-left origin (CGDisplayBounds space).
+    let cursor_pt = win
+        .cursor_position()
+        .ok()
+        .map(|p| (p.x / primary_scale, p.y / primary_scale));
+    let monitor = cursor_pt
+        .and_then(|(cx, cy)| app.monitor_from_point(cx, cy).ok().flatten())
+        .or_else(|| win.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else { return };
+    let scale = monitor.scale_factor();
+    let m_pos = monitor.position();
+    let m_size = monitor.size();
+    let (mx, my) = (m_pos.x as f64 / scale, m_pos.y as f64 / scale);
+    let mw = m_size.width as f64 / scale;
+    // The window's size in points is screen-independent.
+    let win_scale = win.scale_factor().unwrap_or(scale);
+    let ww = win
+        .outer_size()
+        .map(|s| s.width as f64 / win_scale)
+        .unwrap_or(360.0);
+    let (anchor_x, y) = match tray_rect {
+        // Click path: center on the icon, hug its bottom edge.
+        Some((tx, ty, tw, th)) => ((tx + tw / 2.0) / scale, (ty + th) / scale + 2.0),
+        // Menu path: the cursor is over the open menu below the menu bar;
+        // center on it horizontally and anchor just below the menu bar.
+        None => (cursor_pt.map(|(cx, _)| cx).unwrap_or(mx + mw / 2.0), my + 24.0),
+    };
+    let x = (anchor_x - ww / 2.0).clamp(mx, mx + mw - ww);
+    crate::log::log(&format!(
+        "popover positioned at ({x:.0},{y:.0}) on monitor ({mx:.0},{my:.0} {mw:.0}w, scale {scale})"
+    ));
+    let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
-        let _ = win.move_window(Position::TrayCenter);
+        position_popover(&win, None);
         let _ = win.show();
         let _ = win.set_focus();
     }
@@ -307,11 +373,13 @@ pub fn run() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    // 让 positioner 记录托盘图标位置，TrayCenter 定位依赖它。
+                    // 让 positioner 记录托盘图标位置（保留插件状态；定位本身
+                    // 由 position_popover 用逻辑坐标完成，见该函数注释）。
                     tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
+                        rect,
                         ..
                     } = event
                     {
@@ -321,7 +389,13 @@ pub fn run() {
                                 let _ = win.hide();
                             } else {
                                 let _ = app.state::<AppState>().refresh_tx.try_send(());
-                                let _ = win.move_window(Position::TrayCenter);
+                                let r = (
+                                    rect.position.to_physical::<f64>(1.0).x,
+                                    rect.position.to_physical::<f64>(1.0).y,
+                                    rect.size.to_physical::<f64>(1.0).width,
+                                    rect.size.to_physical::<f64>(1.0).height,
+                                );
+                                position_popover(&win, Some(r));
                                 let _ = win.show();
                                 let _ = win.set_focus();
                             }
