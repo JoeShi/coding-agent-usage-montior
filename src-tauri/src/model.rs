@@ -61,8 +61,6 @@ pub struct SourceExtras {
     /// Ark: subscribed plan tier, e.g. "large".
     /// Kiro: subscription title, e.g. "Kiro Power".
     pub plan_tier: Option<String>,
-    /// Ark: where the credentials came from ("aksk" or "arkcli").
-    pub credential_source: Option<String>,
     /// Kiro: whether overage billing is enabled.
     pub overage_enabled: Option<bool>,
     /// Kiro: credits consumed beyond the plan allowance.
@@ -92,14 +90,6 @@ impl UsageSnapshot {
             extras: SourceExtras::default(),
             fetched_at: Utc::now(),
         }
-    }
-
-    /// The most strained window (highest used/quota ratio), used for the
-    /// compact tray title.
-    pub fn most_strained(&self) -> Option<&QuotaWindow> {
-        self.windows
-            .iter()
-            .max_by(|a, b| a.ratio().partial_cmp(&b.ratio()).unwrap_or(std::cmp::Ordering::Equal))
     }
 }
 
@@ -131,14 +121,6 @@ mod tests {
     fn status_serializes_as_tagged() {
         let s = serde_json::to_string(&SourceStatus::NeedRelogin).unwrap();
         assert_eq!(s, r#"{"kind":"need_relogin"}"#);
-    }
-
-    #[test]
-    fn most_strained_picks_highest_ratio() {
-        let mut snap = UsageSnapshot::new(DataSource::ArkAgentPlan, SourceStatus::Ok);
-        snap.windows.push(QuotaWindow { label: "5h".into(), used: 9.0, quota: 10.0, reset_at: None });
-        snap.windows.push(QuotaWindow { label: "weekly".into(), used: 1.0, quota: 10.0, reset_at: None });
-        assert_eq!(snap.most_strained().unwrap().label, "5h");
     }
 
     #[test]

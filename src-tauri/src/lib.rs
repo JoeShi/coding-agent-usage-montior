@@ -31,46 +31,7 @@ impl AppState {
     }
 }
 
-// ---------------------------------------------------------------- tray title
-
-/// Short tag per source for the compact tray title.
-fn source_tag(source: DataSource) -> &'static str {
-    match source {
-        DataSource::KimiCode => "K",
-        DataSource::ArkAgentPlan => "A",
-        DataSource::KiroCli => "R",
-    }
-}
-
-fn tray_title(state: &AppState) -> String {
-    let cfg = state.config.lock().unwrap().clone();
-    let snapshots = state.snapshots.lock().unwrap();
-    let mut parts: Vec<String> = Vec::new();
-    for (source, enabled) in [
-        (DataSource::KimiCode, cfg.show_kimi),
-        (DataSource::ArkAgentPlan, cfg.show_ark),
-        (DataSource::KiroCli, cfg.show_kiro),
-    ] {
-        if !enabled {
-            continue;
-        }
-        let tag = source_tag(source);
-        match snapshots.get(&source) {
-            Some(snap) if snap.status == SourceStatus::Ok || snap.status == SourceStatus::Stale => {
-                match snap.most_strained() {
-                    Some(w) => parts.push(format!("{tag}:{:.0}%", w.ratio() * 100.0)),
-                    None => parts.push(format!("{tag}:--")),
-                }
-            }
-            _ => parts.push(format!("{tag}:--")),
-        }
-    }
-    if parts.is_empty() {
-        "APM".to_string()
-    } else {
-        parts.join(" ")
-    }
-}
+// ---------------------------------------------------------------- tray icon
 
 /// Whether any window of any source is at/over the acceleration threshold.
 fn over_threshold(snapshots: &HashMap<DataSource, UsageSnapshot>) -> bool {
@@ -105,10 +66,11 @@ fn dot_icon(warn: bool) -> tauri::image::Image<'static> {
 
 fn update_tray(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let title = tray_title(&state);
     let warn = over_threshold(&state.snapshots.lock().unwrap());
     if let Some(tray) = app.tray_by_id("main") {
-        let _ = tray.set_title(Some(title));
+        // Icon-only tray: the dot carries the whole signal (red = over
+        // threshold); per-source percentages live in the detail panel.
+        let _ = tray.set_title(None::<&str>);
         let _ = tray.set_icon(Some(dot_icon(warn)));
     }
 }
@@ -145,7 +107,7 @@ fn merge_snapshot(map: &mut HashMap<DataSource, UsageSnapshot>, new: UsageSnapsh
             if old.status == SourceStatus::Ok {
                 let mut merged = old.clone();
                 merged.status = SourceStatus::Stale;
-                // Keep extras from the new fetch (e.g. credential_source).
+                // Keep extras from the new fetch (e.g. plan_tier).
                 merged.extras = new.extras.clone();
                 map.insert(new.source, merged);
                 return;
@@ -205,106 +167,6 @@ fn save_config(app: AppHandle, config: config::AppConfig) -> Result<(), String> 
 
 #[tauri::command]
 async fn refresh_now(app: AppHandle) -> Result<(), String> {
-    let _ = app.state::<AppState>().refresh_tx.try_send(());
-    Ok(())
-}
-
-#[derive(Serialize)]
-struct ArkCredStatus {
-    configured: bool,
-    source: Option<credentials::ArkCredSource>,
-    /// "ok" | "expired" | "not_configured"
-    state: String,
-}
-
-#[tauri::command]
-async fn get_ark_cred_status() -> ArkCredStatus {
-    // Resolution may spawn the arkcli refresh subprocess; keep it off the
-    // async runtime so the IPC handler never blocks.
-    let resolved = tokio::task::spawn_blocking(credentials::resolve_ark_credentials)
-        .await
-        .unwrap_or(Err(credentials::ArkCredError::NotConfigured));
-    match resolved {
-        Ok(c) => ArkCredStatus {
-            configured: true,
-            source: Some(c.source),
-            state: "ok".into(),
-        },
-        Err(credentials::ArkCredError::ArkCliExpired) => ArkCredStatus {
-            configured: false,
-            source: None,
-            state: "expired".into(),
-        },
-        Err(credentials::ArkCredError::NotConfigured) => ArkCredStatus {
-            configured: false,
-            source: None,
-            state: "not_configured".into(),
-        },
-    }
-}
-
-/// Validate AK/SK with a live GetAFPUsage call; only persist on success.
-#[tauri::command]
-async fn save_ark_credentials(app: AppHandle, ak: String, sk: String) -> Result<(), String> {
-    let creds = volc_sigv4::Credentials {
-        access_key: ak.trim().to_string(),
-        secret_key: sk.trim().to_string(),
-        session_token: None,
-    };
-    if creds.access_key.is_empty() || creds.secret_key.is_empty() {
-        return Err("AK/SK 不能为空".into());
-    }
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())?;
-    // Validate before persisting.
-    let body = "{}";
-    let query = vec![
-        ("Action".to_string(), "GetAFPUsage".to_string()),
-        ("Version".to_string(), "2024-01-01".to_string()),
-    ];
-    let signed = volc_sigv4::sign(
-        &creds,
-        "cn-beijing",
-        "ark",
-        &volc_sigv4::SignRequest {
-            method: "POST",
-            host: "ark.cn-beijing.volcengineapi.com",
-            path: "/",
-            query,
-            content_type: "application/json",
-            body: body.as_bytes(),
-            now: chrono::Utc::now(),
-        },
-    );
-    let resp = http
-        .post("https://ark.cn-beijing.volcengineapi.com/?Action=GetAFPUsage&Version=2024-01-01")
-        .header("content-type", "application/json")
-        .header("x-date", &signed.x_date)
-        .header("x-content-sha256", &signed.x_content_sha256)
-        .header("authorization", &signed.authorization)
-        .body(body.to_string())
-        .send()
-        .await
-        .map_err(|e| format!("网络错误: {e}"))?;
-    let text = resp.text().await.map_err(|e| e.to_string())?;
-    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    if let Some(err) = v.pointer("/ResponseMetadata/Error") {
-        let code = err.get("Code").and_then(|c| c.as_str()).unwrap_or("?");
-        let msg = err.get("Message").and_then(|m| m.as_str()).unwrap_or("");
-        return Err(format!(
-            "验证失败 ({code}): {msg}。请确认 AK/SK 正确且具有 ArkReadOnlyAccess 权限"
-        ));
-    }
-    credentials::save_ark_aksk(&creds.access_key, &creds.secret_key)?;
-    let _ = app.state::<AppState>().refresh_tx.try_send(());
-    Ok(())
-}
-
-#[tauri::command]
-fn clear_ark_credentials(app: AppHandle) -> Result<(), String> {
-    credentials::clear_ark_aksk()?;
     let _ = app.state::<AppState>().refresh_tx.try_send(());
     Ok(())
 }
@@ -398,9 +260,6 @@ pub fn run() {
             get_config,
             save_config,
             refresh_now,
-            get_ark_cred_status,
-            save_ark_credentials,
-            clear_ark_credentials,
             get_ark_usage_details,
             get_kiro_cred_status,
             save_kiro_credentials,
@@ -432,7 +291,6 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&refresh_i, &open_i, &settings_i, &quit_i])?;
 
             TrayIconBuilder::with_id("main")
-                .title("APM")
                 .icon(dot_icon(false))
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -554,54 +412,6 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(DataSource::KiroCli, snap(DataSource::KiroCli, SourceStatus::Ok, 85.0, 100.0));
         assert!(over_threshold(&map));
-    }
-
-    fn test_state(snaps: Vec<UsageSnapshot>, cfg: config::AppConfig) -> AppState {
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        AppState {
-            snapshots: Mutex::new(snaps.into_iter().map(|s| (s.source, s)).collect()),
-            config: Mutex::new(cfg),
-            refresh_tx: tx,
-        }
-    }
-
-    #[test]
-    fn tray_title_shows_three_sources() {
-        let state = test_state(
-            vec![
-                snap(DataSource::KimiCode, SourceStatus::Ok, 17.0, 100.0),
-                snap(DataSource::ArkAgentPlan, SourceStatus::Ok, 45.0, 100.0),
-                snap(DataSource::KiroCli, SourceStatus::Ok, 12.0, 100.0),
-            ],
-            config::AppConfig::default(),
-        );
-        assert_eq!(tray_title(&state), "K:17% A:45% R:12%");
-    }
-
-    #[test]
-    fn tray_title_marks_unconfigured_source() {
-        let state = test_state(
-            vec![
-                snap(DataSource::KimiCode, SourceStatus::Ok, 17.0, 100.0),
-                snap(DataSource::KiroCli, SourceStatus::NotConfigured, 0.0, 0.0),
-            ],
-            config::AppConfig::default(),
-        );
-        assert_eq!(tray_title(&state), "K:17% A:-- R:--");
-    }
-
-    #[test]
-    fn tray_title_respects_show_toggles() {
-        let mut cfg = config::AppConfig::default();
-        cfg.show_kiro = false;
-        let state = test_state(
-            vec![
-                snap(DataSource::KimiCode, SourceStatus::Ok, 17.0, 100.0),
-                snap(DataSource::KiroCli, SourceStatus::Ok, 12.0, 100.0),
-            ],
-            cfg,
-        );
-        assert_eq!(tray_title(&state), "K:17% A:--");
     }
 
     #[test]

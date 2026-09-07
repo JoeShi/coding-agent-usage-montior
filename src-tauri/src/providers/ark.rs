@@ -1,10 +1,11 @@
 //! Volcengine Ark AgentPlan (personal) usage provider.
 //!
-//! Control-plane endpoints, V4-signed:
-//! - GetAFPUsage:      5h/1d/1w/1m rolling-window AFP quota
+//! Control-plane endpoints, V4-signed with arkcli SSO-derived STS:
+//! - GetAFPUsage:      5h/1w/1m rolling-window AFP quota (AFPDaily ignored:
+//!                     a phantom always-zero field for personal plans)
 //! - GetUsageDetails:  per-model usage details (Day/Hour granularity)
 
-use crate::credentials::{self, ArkCredError, ArkCredSource};
+use crate::credentials::{self, ArkCredError};
 use crate::model::{DataSource, QuotaWindow, SourceExtras, SourceStatus, UsageSnapshot};
 use crate::volc_sigv4::{self, Credentials, SignRequest};
 use chrono::{DateTime, TimeZone, Utc};
@@ -41,8 +42,6 @@ struct MetaError {
 struct AfpResult {
     #[serde(rename = "AFPFiveHour")]
     five_hour: Option<AfpWindow>,
-    #[serde(rename = "AFPDaily")]
-    daily: Option<AfpWindow>,
     #[serde(rename = "AFPWeekly")]
     weekly: Option<AfpWindow>,
     #[serde(rename = "AFPMonthly")]
@@ -177,12 +176,14 @@ async fn call<T: for<'de> Deserialize<'de>>(
         .ok_or_else(|| FetchError::Transient("missing Result".into()))
 }
 
-/// Fetch the four AFP rolling windows as a unified snapshot.
+/// Fetch the AFP rolling windows (5h / weekly / monthly) as a unified
+/// snapshot. The response's AFPDaily field is a phantom for AgentPlan
+/// personal plans (always 0 used) and is ignored.
 pub async fn fetch_afp_usage(http: &reqwest::Client) -> UsageSnapshot {
     // Credential resolution may spawn the arkcli refresh subprocess (up to
     // 30s), so keep it off the async runtime.
-    let resolved = match tokio::task::spawn_blocking(credentials::resolve_ark_credentials).await {
-        Ok(Ok(r)) => r,
+    let creds = match tokio::task::spawn_blocking(credentials::resolve_ark_credentials).await {
+        Ok(Ok(c)) => c,
         Ok(Err(ArkCredError::NotConfigured)) | Err(_) => {
             return UsageSnapshot::new(DataSource::ArkAgentPlan, SourceStatus::NotConfigured)
         }
@@ -190,12 +191,8 @@ pub async fn fetch_afp_usage(http: &reqwest::Client) -> UsageSnapshot {
             return UsageSnapshot::new(DataSource::ArkAgentPlan, SourceStatus::NeedRelogin)
         }
     };
-    let source_label = match resolved.source {
-        ArkCredSource::AkSk => "aksk",
-        ArkCredSource::ArkCli => "arkcli",
-    };
 
-    match call::<AfpResult>(http, &resolved.creds, "GetAFPUsage", "{}").await {
+    match call::<AfpResult>(http, &creds, "GetAFPUsage", "{}").await {
         Ok(r) => {
             let mut snap = UsageSnapshot::new(DataSource::ArkAgentPlan, SourceStatus::Ok);
             let mut push = |label: &str, w: Option<AfpWindow>| {
@@ -209,25 +206,17 @@ pub async fn fetch_afp_usage(http: &reqwest::Client) -> UsageSnapshot {
                 }
             };
             push("5h", r.five_hour);
-            push("daily", r.daily);
             push("weekly", r.weekly);
             push("monthly", r.monthly);
             snap.extras = SourceExtras {
                 plan_tier: r.plan_type,
-                credential_source: Some(source_label.into()),
                 ..Default::default()
             };
             snap
         }
-        Err(FetchError::Status(s)) => {
-            let mut snap = UsageSnapshot::new(DataSource::ArkAgentPlan, s);
-            snap.extras.credential_source = Some(source_label.into());
-            snap
-        }
+        Err(FetchError::Status(s)) => UsageSnapshot::new(DataSource::ArkAgentPlan, s),
         Err(FetchError::Transient(_)) => {
-            let mut snap = UsageSnapshot::new(DataSource::ArkAgentPlan, SourceStatus::Stale);
-            snap.extras.credential_source = Some(source_label.into());
-            snap
+            UsageSnapshot::new(DataSource::ArkAgentPlan, SourceStatus::Stale)
         }
     }
 }
@@ -239,7 +228,7 @@ pub async fn fetch_usage_details(
     end: &str,
     interval: &str,
 ) -> Result<Vec<UsageDetail>, FetchError> {
-    let resolved = tokio::task::spawn_blocking(credentials::resolve_ark_credentials)
+    let creds = tokio::task::spawn_blocking(credentials::resolve_ark_credentials)
         .await
         .unwrap_or(Err(ArkCredError::NotConfigured))
         .map_err(|e| match e {
@@ -251,7 +240,7 @@ pub async fn fetch_usage_details(
         "Filter": { "StartTime": start, "EndTime": end }
     })
     .to_string();
-    let r = call::<DetailsResult>(http, &resolved.creds, "GetUsageDetails", &body).await?;
+    let r = call::<DetailsResult>(http, &creds, "GetUsageDetails", &body).await?;
     Ok(r.details
         .unwrap_or_default()
         .into_iter()
@@ -272,12 +261,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_afp_response() {
+    fn parses_afp_response_and_ignores_daily() {
+        // AFPDaily stays in the fixture on purpose: the server returns it
+        // (always 0 used for AgentPlan personal) and we must ignore it.
         let body = r#"{"ResponseMetadata":{"Action":"GetAFPUsage","Region":"cn-beijing","RequestId":"x","Service":"ark","Version":"2024-01-01"},"Result":{"AFPDaily":{"Quota":87500,"ResetTime":1788710400000,"SubscribeTime":1788624000000,"Used":0},"AFPFiveHour":{"Quota":25000,"ResetTime":1788696456000,"SubscribeTime":1788678456000,"Used":16319.764},"AFPMonthly":{"Quota":246566.5901,"ResetTime":1791215999000,"SubscribeTime":1788622484000,"Used":19827.5754},"AFPWeekly":{"Quota":125000,"ResetTime":1788710400000,"SubscribeTime":1788105600000,"Used":19827.5754},"PlanType":"large"}}"#;
         let parsed: TopResponse<AfpResult> = serde_json::from_str(body).unwrap();
         let r = parsed.result.unwrap();
         assert_eq!(r.plan_type.as_deref(), Some("large"));
         assert_eq!(r.five_hour.unwrap().quota, Some(25000.0));
+        assert_eq!(r.weekly.unwrap().quota, Some(125000.0));
         assert_eq!(r.monthly.unwrap().used, Some(19827.5754));
     }
 

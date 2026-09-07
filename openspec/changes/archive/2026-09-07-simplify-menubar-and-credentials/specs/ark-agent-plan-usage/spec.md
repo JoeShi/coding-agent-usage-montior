@@ -1,10 +1,14 @@
-# ark-agent-plan-usage Specification
+# ark-agent-plan-usage Delta
 
-## Purpose
+## RENAMED Requirements
 
-通过火山引擎方舟管控面 API 查询 AgentPlan 个人版套餐的额度使用情况，包括 5 小时 / 1 天 / 1 周 / 1 月四个滚动窗口的 AFP 配额与分模型用量明细。
+- FROM: `### Requirement: AK/SK 签名查询套餐配额`
+  TO: `### Requirement: 签名查询套餐配额`
 
-## Requirements
+- FROM: `### Requirement: arkcli 登录态 fallback`
+  TO: `### Requirement: arkcli 登录态凭证`
+
+## MODIFIED Requirements
 
 ### Requirement: 签名查询套餐配额
 
@@ -19,15 +23,6 @@
 
 - **WHEN** arkcli STS 凭证无效或权限不足
 - **THEN** 系统将数据源标记为鉴权错误状态，界面提示用户检查 arkcli 登录态
-
-### Requirement: 查询分模型用量明细
-
-系统 SHALL 支持调用 `POST https://ark.cn-beijing.volcengineapi.com/?Action=GetUsageDetails&Version=2024-01-01`，按天或小时粒度查询指定时间范围内的分模型用量明细，用于明细视图展示。
-
-#### Scenario: 按天查询明细
-
-- **WHEN** 用户打开明细视图并选择时间范围
-- **THEN** 系统以 Day 粒度查询并展示该范围内各模型的用量
 
 ### Requirement: arkcli 登录态凭证
 
@@ -61,3 +56,10 @@
 
 - **WHEN** 距上一次续期尝试不足 90 秒，或上一次续期已超时
 - **THEN** 系统不重复拉起子进程，直接使用当前可读到的凭证状态判定
+
+## REMOVED Requirements
+
+### Requirement: 凭证优先级
+
+**Reason**: 手动 AK/SK 凭证路径整体移除，arkcli 登录态成为唯一来源，优先级比较失去意义。
+**Migration**: 未登录 arkcli 的用户运行 `arkcli auth login`；Keychain 中遗留的旧 AK/SK 条目无害，可不清理。

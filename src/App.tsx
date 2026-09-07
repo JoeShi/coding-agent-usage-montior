@@ -24,7 +24,6 @@ interface SourceExtras {
   extra_balance_cny?: number | null;
   extra_total_cny?: number | null;
   plan_tier?: string | null;
-  credential_source?: string | null;
   overage_enabled?: boolean | null;
   overage_credits?: number | null;
   overage_cost_usd?: number | null;
@@ -41,15 +40,6 @@ interface UsageSnapshot {
 
 interface AppConfig {
   poll_interval_secs: number;
-  show_kimi: boolean;
-  show_ark: boolean;
-  show_kiro: boolean;
-}
-
-interface ArkCredStatus {
-  configured: boolean;
-  source: "aksk" | "arkcli" | null;
-  state: string;
 }
 
 interface KiroCredStatus {
@@ -144,9 +134,6 @@ function SourceCard({ snap }: { snap: UsageSnapshot }) {
           </span>
         )}
         {e.account_email && <span>{e.account_email}</span>}
-        {e.credential_source && (
-          <span>凭证: {e.credential_source === "aksk" ? "手动配置 AK/SK" : "arkcli 登录态"}</span>
-        )}
       </div>
       <div className="fetched">更新于 {new Date(snap.fetched_at).toLocaleTimeString()}</div>
     </div>
@@ -168,49 +155,19 @@ function UsageTab({ snapshots }: { snapshots: UsageSnapshot[] }) {
 
 function SettingsTab({ onSaved }: { onSaved: () => void }) {
   const [cfg, setCfg] = useState<AppConfig | null>(null);
-  const [cred, setCred] = useState<ArkCredStatus | null>(null);
-  const [ak, setAk] = useState("");
-  const [sk, setSk] = useState("");
   const [kiroCred, setKiroCred] = useState<KiroCredStatus | null>(null);
   const [kiroKey, setKiroKey] = useState("");
   const [kiroMsg, setKiroMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [kiroBusy, setKiroBusy] = useState(false);
-  const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
-  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     invoke<AppConfig>("get_config").then(setCfg);
-    invoke<ArkCredStatus>("get_ark_cred_status").then(setCred);
     invoke<KiroCredStatus>("get_kiro_cred_status").then(setKiroCred);
   }, []);
 
   const saveConfig = async (next: AppConfig) => {
     setCfg(next);
     await invoke("save_config", { config: next });
-  };
-
-  const saveCreds = async () => {
-    setBusy(true);
-    setMsg(null);
-    try {
-      await invoke("save_ark_credentials", { ak, sk });
-      setMsg({ text: "验证成功，已保存到 Keychain", ok: true });
-      setAk("");
-      setSk("");
-      setCred(await invoke("get_ark_cred_status"));
-      onSaved();
-    } catch (e) {
-      setMsg({ text: String(e), ok: false });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const clearCreds = async () => {
-    await invoke("clear_ark_credentials");
-    setCred(await invoke("get_ark_cred_status"));
-    setMsg({ text: "已清除保存的 AK/SK", ok: true });
-    onSaved();
   };
 
   const saveKiroKey = async () => {
@@ -243,41 +200,6 @@ function SettingsTab({ onSaved }: { onSaved: () => void }) {
 
   return (
     <div className="settings">
-      <h3>火山引擎凭证</h3>
-      <div className="cred-status">
-        当前来源:{" "}
-        {cred?.configured
-          ? cred.source === "aksk"
-            ? "手动配置的 AK/SK"
-            : "arkcli 登录态（零配置）"
-          : cred?.state === "expired"
-            ? "arkcli 登录态失效（自动续期失败）— 请运行 arkcli auth login 或配置 AK/SK"
-            : "未配置"}
-      </div>
-      <input
-        type="text"
-        placeholder="Access Key"
-        value={ak}
-        onChange={(e) => setAk(e.target.value)}
-      />
-      <input
-        type="password"
-        placeholder="Secret Key"
-        value={sk}
-        onChange={(e) => setSk(e.target.value)}
-      />
-      <div className="hint">
-        建议创建仅带 ArkReadOnlyAccess 权限的 IAM 子用户 Access Key（控制台 → IAM → Access Key
-        管理）。凭证仅存入 macOS Keychain。
-      </div>
-      <div className="btn-row">
-        <button disabled={busy || !ak || !sk} onClick={saveCreds}>
-          {busy ? "验证中…" : "保存并验证"}
-        </button>
-        {cred?.source === "aksk" && <button onClick={clearCreds}>清除已保存的 AK/SK</button>}
-      </div>
-      {msg && <div className={`msg ${msg.ok ? "ok" : "err"}`}>{msg.text}</div>}
-
       <h3>Kiro 凭证</h3>
       <div className="cred-status">
         当前状态: {kiroCred?.configured ? "已配置 API Key" : "未配置"}
@@ -310,32 +232,6 @@ function SettingsTab({ onSaved }: { onSaved: () => void }) {
             saveConfig({ ...cfg, poll_interval_secs: Math.max(30, Number(e.target.value) || 300) })
           }
         />
-      </label>
-
-      <h3>状态栏显示</h3>
-      <label className="row">
-        <input
-          type="checkbox"
-          checked={cfg.show_kimi}
-          onChange={(e) => saveConfig({ ...cfg, show_kimi: e.target.checked })}
-        />
-        显示 Kimi Code
-      </label>
-      <label className="row">
-        <input
-          type="checkbox"
-          checked={cfg.show_ark}
-          onChange={(e) => saveConfig({ ...cfg, show_ark: e.target.checked })}
-        />
-        显示火山 AgentPlan
-      </label>
-      <label className="row">
-        <input
-          type="checkbox"
-          checked={cfg.show_kiro}
-          onChange={(e) => saveConfig({ ...cfg, show_kiro: e.target.checked })}
-        />
-        显示 Kiro
       </label>
     </div>
   );

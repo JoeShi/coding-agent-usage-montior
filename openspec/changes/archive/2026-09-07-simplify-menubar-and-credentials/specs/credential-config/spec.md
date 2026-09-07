@@ -1,10 +1,18 @@
-# credential-config Specification
+# credential-config Delta
 
-## Purpose
+## REMOVED Requirements
 
-提供图形化设置界面，让用户配置 Kiro API Key 与轮询频率，并确保敏感凭证只存储在 macOS Keychain 中。
+### Requirement: 配置火山 AK/SK
 
-## Requirements
+**Reason**: arkcli 自动续期上线后，火山数据源锁定 arkcli 零配置路线；手动 AK/SK 入口成为死重，且不符合"优先 SSO + 临时 STS、不鼓励持久化 AK/SK"的规范。
+**Migration**: 未登录 arkcli 的用户运行 `arkcli auth login`；Keychain 中遗留的旧 AK/SK 条目无害，可不清理。
+
+### Requirement: 凭证来源展示与清除
+
+**Reason**: 火山凭证入口删除后，该需求只剩 Kiro API Key 的状态展示与清除，由新增的"Kiro API Key 状态展示与清除"需求承接。
+**Migration**: Kiro API Key 的状态展示与清除行为见新增需求"Kiro API Key 状态展示与清除"；轮询偏好见"偏好设置"需求。
+
+## MODIFIED Requirements
 
 ### Requirement: 凭证安全存储
 
@@ -20,6 +28,8 @@ Kiro API Key MUST 存储于 macOS Keychain；系统 MUST NOT 将 API Key 以明�
 - **WHEN** 用户保存 Kiro API Key 后
 - **THEN** 应用数据目录内的任何配置文件中均不包含该 key 明文
 
+## ADDED Requirements
+
 ### Requirement: Kiro API Key 状态展示与清除
 
 系统 SHALL 在设置窗口展示 Kiro API Key 的配置状态（已配置 / 未配置），并允许用户清除已保存的 Kiro API Key。
@@ -33,26 +43,3 @@ Kiro API Key MUST 存储于 macOS Keychain；系统 MUST NOT 将 API Key 以明�
 
 - **WHEN** 用户点击清除已保存的 Kiro API Key
 - **THEN** 系统从 Keychain 删除该 key，Kiro 数据源回到未配置状态
-
-### Requirement: 偏好设置
-
-系统 SHALL 允许用户配置轮询间隔与状态栏显示偏好（显示哪些数据源），并持久化这些非敏感配置。
-
-#### Scenario: 修改轮询间隔
-
-- **WHEN** 用户修改轮询间隔并保存
-- **THEN** 配置被持久化，调度器在下一周期按新间隔运行
-
-### Requirement: 配置 Kiro API Key
-
-系统 SHALL 提供设置窗口，允许用户输入并保存 Kiro API Key（`ksk_...`），保存时通过一次真实的 GetUsageLimits 调用验证其有效性，验证成功才写入 macOS Keychain，并向用户反馈验证结果（含订阅档位）。
-
-#### Scenario: 保存并验证成功
-
-- **WHEN** 用户输入有效的 Kiro API Key 并保存
-- **THEN** 系统将 key 存入 Keychain，展示验证成功与订阅档位，并立即刷新 Kiro 数据源
-
-#### Scenario: 验证失败
-
-- **WHEN** 用户输入的 key 无效
-- **THEN** 系统展示服务端返回的具体错误，且不写入 Keychain

@@ -12,21 +12,12 @@ pub const ACCELERATION_THRESHOLD: f64 = 0.8;
 pub struct AppConfig {
     /// Base polling interval in seconds.
     pub poll_interval_secs: u64,
-    /// Whether the Kimi Code source appears in the tray title.
-    pub show_kimi: bool,
-    /// Whether the Ark AgentPlan source appears in the tray title.
-    pub show_ark: bool,
-    /// Whether the Kiro source appears in the tray title.
-    pub show_kiro: bool,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             poll_interval_secs: DEFAULT_POLL_INTERVAL_SECS,
-            show_kimi: true,
-            show_ark: true,
-            show_kiro: true,
         }
     }
 }
@@ -69,31 +60,32 @@ mod tests {
     fn default_config_values() {
         let c = AppConfig::default();
         assert_eq!(c.poll_interval_secs, 300);
-        assert!(c.show_kimi && c.show_ark);
     }
 
     #[test]
     fn toml_roundtrip() {
         let c = AppConfig {
             poll_interval_secs: 120,
-            show_kimi: true,
-            show_ark: false,
-            show_kiro: true,
         };
         let s = toml::to_string(&c).unwrap();
         let back: AppConfig = toml::from_str(&s).unwrap();
         assert_eq!(back.poll_interval_secs, 120);
-        assert!(!back.show_ark);
-        assert!(back.show_kiro);
     }
 
     #[test]
     fn partial_toml_uses_defaults() {
         let back: AppConfig = toml::from_str("poll_interval_secs = 60").unwrap();
         assert_eq!(back.poll_interval_secs, 60);
-        assert!(back.show_kimi);
-        // Old config files predate the kiro toggle and must still load.
-        assert!(back.show_kiro);
+    }
+
+    #[test]
+    fn old_config_with_show_toggles_still_loads() {
+        // Configs written before the show_* toggles were removed must not
+        // break deserialization (serde ignores unknown fields).
+        let back: AppConfig =
+            toml::from_str("poll_interval_secs = 60\nshow_kimi = false\nshow_ark = false\nshow_kiro = false\n")
+                .unwrap();
+        assert_eq!(back.poll_interval_secs, 60);
     }
 
     #[test]
@@ -102,15 +94,10 @@ mod tests {
         let path = dir.join("config.toml");
         let c = AppConfig {
             poll_interval_secs: 90,
-            show_kimi: false,
-            show_ark: true,
-            show_kiro: false,
         };
         save_to(&path, &c).unwrap();
         let back = load_from(&path);
         assert_eq!(back.poll_interval_secs, 90);
-        assert!(!back.show_kimi);
-        assert!(back.show_ark);
         // No secrets ever land in the config file.
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.to_lowercase().contains("secret"));

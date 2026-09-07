@@ -1,5 +1,5 @@
-//! Credential access: macOS Keychain for user-configured Ark AK/SK,
-//! and reuse of arkcli's SSO-derived STS credentials with silent refresh.
+//! Credential access: macOS Keychain for the Kiro API Key, and reuse of
+//! arkcli's SSO-derived STS credentials (with silent refresh) for Ark.
 
 use crate::volc_sigv4::Credentials;
 use chrono::Utc;
@@ -8,83 +8,22 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const KEYCHAIN_SERVICE: &str = "com.agentplanmonitor.app";
-const KEYCHAIN_AK: &str = "ark_access_key";
-const KEYCHAIN_SK: &str = "ark_secret_key";
 const KEYCHAIN_KIRO: &str = "kiro_api_key";
-
-/// Where the effective Ark credentials came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ArkCredSource {
-    /// Explicitly configured in the settings window, stored in Keychain.
-    AkSk,
-    /// Reused from arkcli's SSO login state (~/.arkcli/identities/*/sts.json).
-    ArkCli,
-}
-
-#[derive(Debug, Clone)]
-pub struct ArkCredentials {
-    pub creds: Credentials,
-    pub source: ArkCredSource,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArkCredError {
-    /// Neither Keychain AK/SK nor a valid arkcli login state exists.
+    /// No arkcli login state exists on this machine.
     NotConfigured,
-    /// arkcli STS exists but is expired; user must run `arkcli auth login`.
+    /// arkcli SSO identity is dead (silent refresh failed); user must run
+    /// `arkcli auth login`.
     ArkCliExpired,
 }
 
-/// Resolve Ark credentials: explicit AK/SK first, arkcli STS as fallback.
-pub fn resolve_ark_credentials() -> Result<ArkCredentials, ArkCredError> {
-    choose(keychain_aksk(), arkcli_sts())
-}
-
-/// Pure priority logic, unit-testable without touching Keychain or disk.
-fn choose(
-    aksk: Option<Credentials>,
-    arkcli: Result<Credentials, ArkCredError>,
-) -> Result<ArkCredentials, ArkCredError> {
-    if let Some(c) = aksk {
-        return Ok(ArkCredentials {
-            creds: c,
-            source: ArkCredSource::AkSk,
-        });
-    }
-    arkcli.map(|c| ArkCredentials {
-        creds: c,
-        source: ArkCredSource::ArkCli,
-    })
-}
-
-fn keychain_aksk() -> Option<Credentials> {
-    let ak = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_AK).ok()?.get_password().ok()?;
-    let sk = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_SK).ok()?.get_password().ok()?;
-    if ak.is_empty() || sk.is_empty() {
-        return None;
-    }
-    Some(Credentials {
-        access_key: ak,
-        secret_key: sk,
-        session_token: None,
-    })
-}
-
-pub fn save_ark_aksk(ak: &str, sk: &str) -> Result<(), String> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_AK)
-        .and_then(|e| e.set_password(ak))
-        .map_err(|e| e.to_string())?;
-    keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_SK)
-        .and_then(|e| e.set_password(sk))
-        .map_err(|e| e.to_string())
-}
-
-pub fn clear_ark_aksk() -> Result<(), String> {
-    // Deleting a non-existent entry is fine.
-    let _ = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_AK).map(|e| e.delete_credential());
-    let _ = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_SK).map(|e| e.delete_credential());
-    Ok(())
+/// Resolve Ark credentials from arkcli's SSO login state, the only
+/// supported source. Triggers a silent STS refresh when the cached token
+/// is expired or expiring.
+pub fn resolve_ark_credentials() -> Result<Credentials, ArkCredError> {
+    arkcli_sts()
 }
 
 // ---------------------------------------------------------------- Kiro
@@ -297,38 +236,6 @@ fn find_arkcli_binary() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn cred() -> Credentials {
-        Credentials {
-            access_key: "ak".into(),
-            secret_key: "sk".into(),
-            session_token: None,
-        }
-    }
-
-    #[test]
-    fn explicit_aksk_wins_over_arkcli() {
-        let r = choose(Some(cred()), Ok(cred())).unwrap();
-        assert_eq!(r.source, ArkCredSource::AkSk);
-    }
-
-    #[test]
-    fn falls_back_to_arkcli_when_no_aksk() {
-        let r = choose(None, Ok(cred())).unwrap();
-        assert_eq!(r.source, ArkCredSource::ArkCli);
-    }
-
-    #[test]
-    fn propagates_arkcli_expiry() {
-        assert!(matches!(
-            choose(None, Err(ArkCredError::ArkCliExpired)),
-            Err(ArkCredError::ArkCliExpired)
-        ));
-        assert!(matches!(
-            choose(None, Err(ArkCredError::NotConfigured)),
-            Err(ArkCredError::NotConfigured)
-        ));
-    }
 
     #[test]
     fn sts_expiry_uses_safety_skew() {
