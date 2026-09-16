@@ -8,6 +8,9 @@ on:
 env:
   APPLE_SIGNING_IDENTITY: "-"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-latest
