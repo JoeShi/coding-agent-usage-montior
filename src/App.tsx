@@ -31,10 +31,11 @@ interface SourceExtras {
 }
 
 interface UsageSnapshot {
-  source: "kimi_code" | "ark_agent_plan" | "kiro_cli";
+  source: "kimi_code" | "ark_agent_plan" | "kiro_cli" | "codex";
   status: SourceStatus;
   windows: QuotaWindow[];
   extras: SourceExtras;
+  message?: string | null;
   fetched_at: string;
 }
 
@@ -52,6 +53,7 @@ const SOURCE_NAME: Record<string, string> = {
   kimi_code: "Kimi Code",
   ark_agent_plan: "火山 AgentPlan",
   kiro_cli: "Kiro",
+  codex: "Codex",
 };
 
 function statusText(s: SourceStatus): { text: string; cls: string } {
@@ -112,6 +114,7 @@ function SourceCard({ snap }: { snap: UsageSnapshot }) {
         <span className="card-title">{SOURCE_NAME[snap.source]}</span>
         <span className={`status ${st.cls}`}>{st.text}</span>
       </div>
+      {snap.message && <div className="source-message">{snap.message}</div>}
       {snap.windows.map((w) => (
         <WindowRow key={w.label} w={w} />
       ))}

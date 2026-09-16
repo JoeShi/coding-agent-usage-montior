@@ -37,13 +37,19 @@ impl AppState {
 fn over_threshold(snapshots: &HashMap<DataSource, UsageSnapshot>) -> bool {
     snapshots.values().any(|s| {
         s.status == SourceStatus::Ok
-            && s.windows.iter().any(|w| w.ratio() >= config::ACCELERATION_THRESHOLD)
+            && s.windows
+                .iter()
+                .any(|w| w.ratio() >= config::ACCELERATION_THRESHOLD)
     })
 }
 
 /// 16x16 RGBA dot icon; red when over threshold, gray otherwise.
 fn dot_icon(warn: bool) -> tauri::image::Image<'static> {
-    let (r, g, b) = if warn { (0xe1u8, 0x4du8, 0x42u8) } else { (0x99u8, 0x99u8, 0x99u8) };
+    let (r, g, b) = if warn {
+        (0xe1u8, 0x4du8, 0x42u8)
+    } else {
+        (0x99u8, 0x99u8, 0x99u8)
+    };
     let size = 16usize;
     let mut rgba = vec![0u8; size * size * 4];
     let center = (size as f64 - 1.0) / 2.0;
@@ -82,10 +88,11 @@ async fn refresh_all(app: &AppHandle) {
         .timeout(Duration::from_secs(20))
         .build()
         .unwrap_or_default();
-    let (kimi, ark, kiro) = tokio::join!(
+    let (kimi, ark, kiro, codex) = tokio::join!(
         providers::kimi::fetch_usage(&http),
         providers::ark::fetch_afp_usage(&http),
-        providers::kiro::fetch_usage(&http)
+        providers::kiro::fetch_usage(&http),
+        providers::codex::fetch_usage()
     );
     {
         let state = app.state::<AppState>();
@@ -93,6 +100,7 @@ async fn refresh_all(app: &AppHandle) {
         merge_snapshot(&mut snapshots, kimi);
         merge_snapshot(&mut snapshots, ark);
         merge_snapshot(&mut snapshots, kiro);
+        merge_snapshot(&mut snapshots, codex);
     }
     update_tray(app);
     let state = app.state::<AppState>();
@@ -104,11 +112,15 @@ async fn refresh_all(app: &AppHandle) {
 fn merge_snapshot(map: &mut HashMap<DataSource, UsageSnapshot>, new: UsageSnapshot) {
     if new.status == SourceStatus::Stale {
         if let Some(old) = map.get(&new.source) {
-            if old.status == SourceStatus::Ok {
+            if matches!(old.status, SourceStatus::Ok | SourceStatus::Stale)
+                && !old.windows.is_empty()
+            {
                 let mut merged = old.clone();
                 merged.status = SourceStatus::Stale;
-                // Keep extras from the new fetch (e.g. plan_tier).
-                merged.extras = new.extras.clone();
+                if new.extras != Default::default() {
+                    merged.extras = new.extras.clone();
+                }
+                merged.message = new.message.clone();
                 map.insert(new.source, merged);
                 return;
             }
@@ -119,7 +131,10 @@ fn merge_snapshot(map: &mut HashMap<DataSource, UsageSnapshot>, new: UsageSnapsh
 
 /// Polling interval given current config + data: accelerated when any
 /// window is >= 80%, otherwise the configured base (clamped to >= 30s).
-fn poll_interval(cfg: &config::AppConfig, snapshots: &HashMap<DataSource, UsageSnapshot>) -> Duration {
+fn poll_interval(
+    cfg: &config::AppConfig,
+    snapshots: &HashMap<DataSource, UsageSnapshot>,
+) -> Duration {
     if over_threshold(snapshots) {
         Duration::from_secs(config::ACCELERATED_POLL_INTERVAL_SECS)
     } else {
@@ -292,7 +307,10 @@ fn position_popover(win: &tauri::WebviewWindow, tray_rect: Option<(f64, f64, f64
         Some((tx, ty, tw, th)) => ((tx + tw / 2.0) / scale, (ty + th) / scale + 2.0),
         // Menu path: the cursor is over the open menu below the menu bar;
         // center on it horizontally and anchor just below the menu bar.
-        None => (cursor_pt.map(|(cx, _)| cx).unwrap_or(mx + mw / 2.0), my + 24.0),
+        None => (
+            cursor_pt.map(|(cx, _)| cx).unwrap_or(mx + mw / 2.0),
+            my + 24.0,
+        ),
     };
     let x = (anchor_x - ww / 2.0).clamp(mx, mx + mw - ww);
     crate::log::log(&format!(
@@ -337,7 +355,9 @@ pub fn run() {
             // Popover 风格：毛玻璃背景（随系统深浅色自适应）+ 原生圆角。
             #[cfg(target_os = "macos")]
             if let Some(win) = app.get_webview_window("main") {
-                use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+                use window_vibrancy::{
+                    apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState,
+                };
                 // Menu 材质：与系统菜单栏下拉一致；Popover 会被壁纸染色（BehindWindow 混合）。
                 if let Err(e) = apply_vibrancy(
                     &win,
@@ -428,7 +448,6 @@ pub fn run() {
         .run(|_app, _event| {});
 }
 
-
 // ---------------------------------------------------------------- tests
 
 #[cfg(test)]
@@ -450,24 +469,48 @@ mod tests {
     }
 
     #[test]
-    fn merge_keeps_last_good_on_stale() {
+    fn merge_keeps_last_good_on_repeated_stale_fetches() {
         let mut map = HashMap::new();
-        map.insert(DataSource::KimiCode, snap(DataSource::KimiCode, SourceStatus::Ok, 10.0, 100.0));
-        merge_snapshot(&mut map, snap(DataSource::KimiCode, SourceStatus::Stale, 0.0, 0.0));
-        let s = &map[&DataSource::KimiCode];
-        assert_eq!(s.status, SourceStatus::Stale, "marked stale");
-        assert_eq!(s.windows[0].used, 10.0, "but keeps last-good data");
+        let mut initial = snap(DataSource::KimiCode, SourceStatus::Ok, 10.0, 100.0);
+        initial.extras.plan_tier = Some("pro".into());
+        map.insert(DataSource::KimiCode, initial);
+
+        let mut first_stale = snap(DataSource::KimiCode, SourceStatus::Stale, 0.0, 0.0);
+        first_stale.message = Some("temporary failure".into());
+        merge_snapshot(&mut map, first_stale);
+        merge_snapshot(
+            &mut map,
+            snap(DataSource::KimiCode, SourceStatus::Stale, 0.0, 0.0),
+        );
+
+        let snapshot = &map[&DataSource::KimiCode];
+        assert_eq!(snapshot.status, SourceStatus::Stale, "marked stale");
+        assert_eq!(snapshot.windows[0].used, 10.0, "keeps last-good data");
+        assert_eq!(
+            snapshot.extras.plan_tier.as_deref(),
+            Some("pro"),
+            "keeps last-good extras when stale fetch has none"
+        );
     }
 
     #[test]
     fn merge_replaces_on_ok_and_hard_errors() {
         let mut map = HashMap::new();
-        map.insert(DataSource::KimiCode, snap(DataSource::KimiCode, SourceStatus::Stale, 5.0, 100.0));
-        merge_snapshot(&mut map, snap(DataSource::KimiCode, SourceStatus::Ok, 6.0, 100.0));
+        map.insert(
+            DataSource::KimiCode,
+            snap(DataSource::KimiCode, SourceStatus::Stale, 5.0, 100.0),
+        );
+        merge_snapshot(
+            &mut map,
+            snap(DataSource::KimiCode, SourceStatus::Ok, 6.0, 100.0),
+        );
         assert_eq!(map[&DataSource::KimiCode].status, SourceStatus::Ok);
         assert_eq!(map[&DataSource::KimiCode].windows[0].used, 6.0);
 
-        merge_snapshot(&mut map, snap(DataSource::KimiCode, SourceStatus::NeedRelogin, 0.0, 0.0));
+        merge_snapshot(
+            &mut map,
+            snap(DataSource::KimiCode, SourceStatus::NeedRelogin, 0.0, 0.0),
+        );
         assert_eq!(map[&DataSource::KimiCode].status, SourceStatus::NeedRelogin);
         assert!(map[&DataSource::KimiCode].windows.is_empty());
     }
@@ -475,16 +518,35 @@ mod tests {
     #[test]
     fn acceleration_threshold_boundary() {
         let mut map = HashMap::new();
-        map.insert(DataSource::KimiCode, snap(DataSource::KimiCode, SourceStatus::Ok, 79.0, 100.0));
+        map.insert(
+            DataSource::KimiCode,
+            snap(DataSource::KimiCode, SourceStatus::Ok, 79.0, 100.0),
+        );
         assert!(!over_threshold(&map));
-        map.insert(DataSource::KimiCode, snap(DataSource::KimiCode, SourceStatus::Ok, 80.0, 100.0));
+        map.insert(
+            DataSource::KimiCode,
+            snap(DataSource::KimiCode, SourceStatus::Ok, 80.0, 100.0),
+        );
         assert!(over_threshold(&map));
     }
 
     #[test]
     fn acceleration_applies_to_kiro_monthly_window() {
         let mut map = HashMap::new();
-        map.insert(DataSource::KiroCli, snap(DataSource::KiroCli, SourceStatus::Ok, 85.0, 100.0));
+        map.insert(
+            DataSource::KiroCli,
+            snap(DataSource::KiroCli, SourceStatus::Ok, 85.0, 100.0),
+        );
+        assert!(over_threshold(&map));
+    }
+
+    #[test]
+    fn acceleration_applies_to_codex_window() {
+        let mut map = HashMap::new();
+        map.insert(
+            DataSource::Codex,
+            snap(DataSource::Codex, SourceStatus::Ok, 80.0, 100.0),
+        );
         assert!(over_threshold(&map));
     }
 
@@ -493,10 +555,16 @@ mod tests {
         let mut cfg = config::AppConfig::default();
         cfg.poll_interval_secs = 300;
         let mut map = HashMap::new();
-        map.insert(DataSource::KimiCode, snap(DataSource::KimiCode, SourceStatus::Ok, 10.0, 100.0));
+        map.insert(
+            DataSource::KimiCode,
+            snap(DataSource::KimiCode, SourceStatus::Ok, 10.0, 100.0),
+        );
         assert_eq!(poll_interval(&cfg, &map), Duration::from_secs(300));
 
-        map.insert(DataSource::KimiCode, snap(DataSource::KimiCode, SourceStatus::Ok, 90.0, 100.0));
+        map.insert(
+            DataSource::KimiCode,
+            snap(DataSource::KimiCode, SourceStatus::Ok, 90.0, 100.0),
+        );
         assert_eq!(
             poll_interval(&cfg, &map),
             Duration::from_secs(config::ACCELERATED_POLL_INTERVAL_SECS)
@@ -504,7 +572,10 @@ mod tests {
 
         // Clamp pathological config values.
         cfg.poll_interval_secs = 1;
-        map.insert(DataSource::KimiCode, snap(DataSource::KimiCode, SourceStatus::Ok, 0.0, 100.0));
+        map.insert(
+            DataSource::KimiCode,
+            snap(DataSource::KimiCode, SourceStatus::Ok, 0.0, 100.0),
+        );
         assert_eq!(poll_interval(&cfg, &map), Duration::from_secs(30));
     }
 }

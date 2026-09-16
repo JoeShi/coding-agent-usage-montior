@@ -8,6 +8,7 @@ pub enum DataSource {
     KimiCode,
     ArkAgentPlan,
     KiroCli,
+    Codex,
 }
 
 /// Health of a data source's last refresh.
@@ -60,6 +61,7 @@ pub struct SourceExtras {
     pub extra_total_cny: Option<f64>,
     /// Ark: subscribed plan tier, e.g. "large".
     /// Kiro: subscription title, e.g. "Kiro Power".
+    /// Codex: ChatGPT plan type, e.g. "plus".
     pub plan_tier: Option<String>,
     /// Kiro: whether overage billing is enabled.
     pub overage_enabled: Option<bool>,
@@ -78,6 +80,9 @@ pub struct UsageSnapshot {
     pub status: SourceStatus,
     pub windows: Vec<QuotaWindow>,
     pub extras: SourceExtras,
+    /// Optional actionable, secret-free status detail for the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     pub fetched_at: DateTime<Utc>,
 }
 
@@ -88,6 +93,7 @@ impl UsageSnapshot {
             status,
             windows: Vec::new(),
             extras: SourceExtras::default(),
+            message: None,
             fetched_at: Utc::now(),
         }
     }
@@ -118,6 +124,14 @@ mod tests {
     }
 
     #[test]
+    fn codex_serializes_as_codex() {
+        assert_eq!(
+            serde_json::to_string(&DataSource::Codex).unwrap(),
+            r#""codex""#
+        );
+    }
+
+    #[test]
     fn status_serializes_as_tagged() {
         let s = serde_json::to_string(&SourceStatus::NeedRelogin).unwrap();
         assert_eq!(s, r#"{"kind":"need_relogin"}"#);
@@ -125,7 +139,12 @@ mod tests {
 
     #[test]
     fn zero_quota_ratio_is_zero() {
-        let w = QuotaWindow { label: "x".into(), used: 5.0, quota: 0.0, reset_at: None };
+        let w = QuotaWindow {
+            label: "x".into(),
+            used: 5.0,
+            quota: 0.0,
+            reset_at: None,
+        };
         assert_eq!(w.ratio(), 0.0);
     }
 }
